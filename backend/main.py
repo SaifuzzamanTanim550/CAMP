@@ -14,6 +14,8 @@ from folium import Map, Choropleth, GeoJson
 from folium.features import GeoJsonTooltip, Element
 from shapely.geometry import Point
 import os
+from google.cloud import storage 
+import io
 
 app = Flask(__name__)
 CORS(app)  # allows React to fetch from different port
@@ -22,130 +24,201 @@ def allow_iframe(response):
     response.headers["X-Frame-Options"] = "ALLOWALL"
     return response
 
-@app.route("/load")
-def load_data():
-    global df, shapes_gdf
-    file_location = os.path.join(os.path.dirname(__file__), "crime_dataset.parquet")
-    df = pd.read_parquet(file_location)
-    geojson_path = os.path.join(os.path.dirname(__file__), "nyc_nta_2020.geojson")
-    shapes_gdf = gpd.read_file(geojson_path)
-    print(f" Loaded {len(df)} rows from Parquet")
-    return " Data loaded"
-
-# Convert df to GeoDataFrame
-df_gdf = gpd.GeoDataFrame(
-    df,
-    geometry=gpd.points_from_xy(df["Longitude"], df["Latitude"]),
-    crs="EPSG:4326"
-)
-
-# Spatial join once
-df_with_shapes = gpd.sjoin(df_gdf, shapes_gdf, how="inner", predicate="intersects")
-
-category_rules = {
-    "VANDALISM": {
-        "include": ["CRIM MISCHIEF", "TRESPASS", "GRAFF"],
-        "exclude": ["ASSAULT", "HARASSMENT"]
-    },
-    "DRUGS": {
-        "include": ["NARCO", "MARIJUANA"],
-        "exclude": []
-    },
-    "HARASSMENT": {
-        "include": ["HARASSMENT", "VIOL ORDER PROTECT", "DOMESTIC", "FAMILY"],
-        "exclude": ["ASSAULT"]
-    },
-    "ASSAULT": {
-        "include": ["ASSAULT"],
-        "exclude": []
-    },
-    "VEHICLE THEFT": {
-        "include": ["LARCENY", "VEHICLE"],
-        "exclude": []
-    },
-    "THEFT": {
-        "include": ["LARCENY"],
-        "exclude": ["VEHICLE"]
-    },
-    "BURGLARY": {
-        "include": ["BURGLARY"],
-        "exclude": []
-    },
-    "ROBBERY": {
-        "include": ["ROBBERY"],
-        "exclude": []
-    },
-    "SHOOTINGS": {
-        "include": ["SHOT SPOTTER", "SHOTS", "FIREARM"],
-        "exclude": []
-    }
-}
-
+#Global Vars to prevent errors when I build before calling load
+df = None
+shapes_gdf = None
+df_gdf = None
+df_with_shapes = None
 precomputed_categories = {}
-
-for cat, rules in category_rules.items():
-    mask = df_with_shapes["TYP_DESC"].str.contains("|".join(rules["include"]), case=False, na=False)
-    if rules["exclude"]:
-        mask &= ~df_with_shapes["TYP_DESC"].str.contains("|".join(rules["exclude"]), case=False, na=False)
-    precomputed_categories[cat] = df_with_shapes[mask]
-
 choropleth_maps = {}
 
-for cat, subset in precomputed_categories.items():
-    counts = subset.groupby("NTA2020").size().reset_index(name="count")
+#Changing method of storage completely to Google Cloud Storage cause csv's total more than 100mb
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "crime-dataset-bucket")
+PARQUET_FILE_NAME = "crime_dataset.parquet"
+GEOJSON_FILE_NAME = "nyc_nta_2020.geojson"
 
-    shapes_with_counts = shapes_gdf.merge(counts, on="NTA2020", how="left").fillna(0)
 
-    m = folium.Map(location=[40.7128, -74.0060], zoom_start=11, tiles="CartoDB dark_matter")
-    folium.Choropleth(
-        geo_data=shapes_with_counts,
-        data=shapes_with_counts,
-        columns=["NTA2020", "count"],
-        key_on="feature.properties.NTA2020",
-        fill_color="YlOrRd",
-        fill_opacity=0.8,
-        line_opacity=0.3,
-        nan_fill_color="gray",
-        legend_name=f"{cat} Incidents"
-    ).add_to(m)
+def load_parquet(bucket_name, blob_name):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
 
-    GeoJson(
-        shapes_with_counts,
-        style_function=lambda feature: {
-            "fillColor": "transparent",
-            "color": "transparent",
-            "weight": 0
+    parquet = blob.download_as_bytes()
+
+    df = pd.read_parquet(io.BytesIO(parquet))
+    return df
+
+def load_geojson(bucket_name, blob_name):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+
+    geojson = blob.download_as_bytes()
+
+    gdf = gpd.read_file(io.BytesIO(geojson))
+    return gdf
+
+#making method for this so tracking a df or shapes failure is easier
+def making_heatmap():
+    #check if data loaded 
+    if df is None or shapes_gdf is None:
+        print("Error: Data not present in either shapes or df")
+        return False
+    
+    global df_gdf
+    global df_with_shapes
+    global precomputed_categories
+    global choropleth_maps
+
+    df_gdf = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(df["Longitude"], df["Latitude"]),
+        crs="EPSG:4326"
+    )
+
+    # Spatial join once
+    df_with_shapes = gpd.sjoin(df_gdf, shapes_gdf, how="inner", predicate="intersects")
+
+    category_rules = {
+        "VANDALISM": {
+            "include": ["CRIM MISCHIEF", "TRESPASS", "GRAFF"],
+            "exclude": ["ASSAULT", "HARASSMENT"]
         },
-        tooltip=GeoJsonTooltip(
-            fields=["NTAName", "count"],
-            aliases=["Neighborhood:", "Incidents:"],
-            localize=True,
-            sticky=True,
-        )
-    ).add_to(m)
+        "DRUGS": {
+            "include": ["NARCO", "MARIJUANA"],
+            "exclude": []
+        },
+        "HARASSMENT": {
+            "include": ["HARASSMENT", "VIOL ORDER PROTECT", "DOMESTIC", "FAMILY"],
+            "exclude": ["ASSAULT"]
+        },
+        "ASSAULT": {
+            "include": ["ASSAULT"],
+            "exclude": []
+        },
+        "VEHICLE THEFT": {
+            "include": ["LARCENY", "VEHICLE"],
+            "exclude": []
+        },
+        "THEFT": {
+            "include": ["LARCENY"],
+            "exclude": ["VEHICLE"]
+        },
+        "BURGLARY": {
+            "include": ["BURGLARY"],
+            "exclude": []
+        },
+        "ROBBERY": {
+            "include": ["ROBBERY"],
+            "exclude": []
+        },
+        "SHOOTINGS": {
+            "include": ["SHOT SPOTTER", "SHOTS", "FIREARM"],
+            "exclude": []
+        }
+    }
 
-    map_title = f"{cat} in NYC"
-    subtitle = "Neighborhood incident counts"
-    title_html = f"""
-        <div style="
-            position: fixed;
-            top: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 9999;
-            background-color: rgba(0, 0, 0, 0.6);
-            padding: 6px 10px;
-            border-radius: 4px;
-            color: white;
-            font-size: 14px;
-            text-align: center;
-        ">
-            <b>{map_title}</b><br>{subtitle}
-        </div>
-    """
-    m.get_root().html.add_child(Element(title_html))
+    precomputed_categories.clear()
 
-    choropleth_maps[cat] = m.get_root().render()
+    for cat, rules in category_rules.items():
+        mask = df_with_shapes["TYP_DESC"].str.contains("|".join(rules["include"]), case=False, na=False)
+        if rules["exclude"]:
+            mask &= ~df_with_shapes["TYP_DESC"].str.contains("|".join(rules["exclude"]), case=False, na=False)
+        precomputed_categories[cat] = df_with_shapes[mask]
+
+    choropleth_maps.clear()
+
+    for cat, subset in precomputed_categories.items():
+        counts = subset.groupby("NTA2020").size().reset_index(name="count")
+        shapes_with_counts = shapes_gdf.merge(counts, on="NTA2020", how="left").fillna(0)
+
+        m = folium.Map(location=[40.7128, -74.0060], zoom_start=11, tiles="CartoDB dark_matter")
+        folium.Choropleth(
+            geo_data=shapes_with_counts,
+            data=shapes_with_counts,
+            columns=["NTA2020", "count"],
+            key_on="feature.properties.NTA2020",
+            fill_color="YlOrRd",
+            fill_opacity=0.8,
+            line_opacity=0.3,
+            nan_fill_color="gray",
+            legend_name=f"{cat} Incidents"
+        ).add_to(m)
+
+        GeoJson(
+            shapes_with_counts,
+            style_function=lambda feature: {
+                "fillColor": "transparent",
+                "color": "transparent",
+                "weight": 0
+            },
+            tooltip=GeoJsonTooltip(
+                fields=["NTAName", "count"],
+                aliases=["Neighborhood:", "Incidents:"],
+                localize=True,
+                sticky=True,
+            )
+        ).add_to(m)
+
+        map_title = f"{cat} in NYC"
+        subtitle = "Neighborhood incident counts"
+        title_html = f"""
+            <div style="
+                position: fixed;
+                top: 10px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 9999;
+                background-color: rgba(0, 0, 0, 0.6);
+                padding: 6px 10px;
+                border-radius: 4px;
+                color: white;
+                font-size: 14px;
+                text-align: center;
+            ">
+                <b>{map_title}</b><br>{subtitle}
+            </div>
+        """
+        m.get_root().html.add_child(Element(title_html))
+
+        choropleth_maps[cat] = m.get_root().render()
+
+    #check for 9 successful maps
+    print(f" Made {len(choropleth_maps)} choropleth maps")
+    return True
+
+@app.route("/load")
+def load_data():
+    global df
+    global shapes_gdf
+
+    #testing GCS loading 
+    try:
+        df = load_parquet(GCS_BUCKET_NAME, PARQUET_FILE_NAME)
+        print(f"loaded {len(df)} rows from parquet")
+
+        #we expect 2.69 ish mil
+        #for geojson we know it can work local since its not too much memory but we can make it uniform
+        try:
+            shapes_gdf = load_geojson(GCS_BUCKET_NAME, GEOJSON_FILE_NAME)
+            print(f"success loading geojson from bucket")
+        except Exception as e:
+            geojson_path = os.path.join(os.path.dirname(__file__), "nyc_nta_2020.geojson")
+            if os.path.exists(geojson_path):
+                shapes_gdf = gpd.read_file(geojson_path)
+            else:
+                return f"couldn't find geojson on local or cloud look at pathing"
+
+        if making_heatmap():
+            return f"Created {len(choropleth_maps)} maps"
+        else:
+            return "Data loaded but process failed"
+
+    except Exception as e:
+        print(f"Error loading data boy")
+        import traceback
+        traceback.print_exc()
+        return False
 
 @app.route("/ping")
 def ping():
@@ -159,80 +232,55 @@ def default_map():
 @app.route("/maps/heatmap")
 def crime_heatmap():
     # Get query parameter ?category=ASSAULT
-    category = request.args.get("category", "ASSAULT")
+    category = request.args.get("category", "ASSAULT").upper()
+
+    if not choropleth_maps:
+        return f"Data not loaded. Use /load"
 
     if category not in choropleth_maps:
         return f"Invalid category: {category}", 400
     
     return choropleth_maps[category]
 
-def make_crime_heatmap(
-    df_subset,
-    shapes_gdf,
-    center=(40.7128, -74.0060),
-    zoom_start=10,
-    map_title="NYC Crime Heatmap",
-    subtitle="Neighborhoods colored by number of incidents",
-    legend_name="Number of incidents",
-):
-    sub = df_subset.dropna(subset=["Latitude", "Longitude"]).copy()
-    gdf_points = gpd.GeoDataFrame(
-        sub,
-        geometry=[Point(xy) for xy in zip(sub["Longitude"], sub["Latitude"])],
-        crs="EPSG:4326",
-    )
-    joined = gpd.sjoin(gdf_points, shapes_gdf, how="inner", predicate="within")
-    neigh_counts = joined.groupby("NTAName").size().reset_index(name="incident_count")
-    shapes_plot = shapes_gdf.merge(neigh_counts, on="NTAName", how="left")
+def initialize_data():
+    global df
+    global shapes_gdf
 
-    m = Map(location=center, zoom_start=zoom_start, tiles="CartoDB dark_matter")
+    try:
+        df = load_parquet(GCS_BUCKET_NAME, PARQUET_FILE_NAME)
+        print(f"loaded {len(df)} rows from parquet")
 
-    Choropleth(
-        geo_data=shapes_plot,
-        data=shapes_plot,
-        columns=["NTAName", "incident_count"],
-        key_on="feature.properties.NTAName",
-        fill_color="YlOrRd",
-        fill_opacity=0.8,
-        line_opacity=0.3,
-        nan_fill_color="gray",
-        legend_name=legend_name,
-    ).add_to(m)
+        #we expect 2.69 ish mil
+        #for geojson we know it can work local since its not too much memory but we can make it uniform
+        try:
+            shapes_gdf = load_geojson(GCS_BUCKET_NAME, GEOJSON_FILE_NAME)
+            print(f"success loading geojson from bucket")
+        except Exception as e:
+            geojson_path = os.path.join(os.path.dirname(__file__), "nyc_nta_2020.geojson")
+            if os.path.exists(geojson_path):
+                shapes_gdf = gpd.read_file(geojson_path)
+            else:
+                return 
 
-    GeoJson(
-        shapes_plot,
-        style_function=lambda x: {"fillColor": "transparent", "color": "transparent", "weight": 0},
-        tooltip=GeoJsonTooltip(
-            fields=["NTAName", "incident_count"],
-            aliases=["Neighborhood", "Incidents"],
-            localize=True,
-            sticky=True,
-        ),
-    ).add_to(m)
+        if shapes_gdf is not None:
+            if making_heatmap():
+                print(f"Created {len(choropleth_maps)} maps")
+            else:
+                print("Data loaded but process failed")
+        else:
+            print("geojson failed to load")
 
-    title_html = f"""
-    <div style="
-        position: fixed;
-        top: 10px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 9999;
-        background-color: rgba(0, 0, 0, 0.6);
-        padding: 6px 10px;
-        border-radius: 4px;
-        color: white;
-        font-size: 14px;
-        text-align: center;
-    ">
-        <b>{map_title}</b><br>{subtitle}
-    </div>
-    """
-    m.get_root().html.add_child(Element(title_html))
-    return m
+    except Exception as e:
+        print(f"Error loading data boy")
+        import traceback
+        traceback.print_exc()
+
+initialize_data()
+    
 
 #GEOGUESSER CODE START
 
-app.config["SECRET_KEY"] = "your-secret-key"
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "change-me-in-production")
 CORS(app, resources={r"/*": {"origins": "https://frontend-service-353447914077.us-east4.run.app"}})
 
 # SocketIO setup
@@ -313,7 +361,7 @@ def get_zip_crime_counts(zip_code):
     sub = df[df["ZIPCODE"] == zip_code]
 
     if sub.empty:
-        print(f"⚠️ No crimes found for ZIP {zip_code}")
+        print(f" No crimes found for ZIP {zip_code}")
         return []
 
     shooting = (
@@ -411,7 +459,7 @@ def get_zip_crime_counts(zip_code):
     # Filter out zero counts
     crime_data = [c for c in crime_data if c["count"] > 0]
 
-    print(f"✓ ZIP {zip_code} has {len(crime_data)} crime types with data")
+    print(f"ZIP {zip_code} has {len(crime_data)} crime types with data")
     return crime_data
 
 
@@ -444,7 +492,7 @@ def get_random_location():
 # Start a round
 def start_round(room_code):
     if room_code not in games:
-        print(f"⚠️ Cannot start round - room {room_code} does not exist")
+        print(f" Cannot start round - room {room_code} does not exist")
         return
 
     game = games[room_code]
@@ -473,7 +521,7 @@ def start_round(room_code):
     location = get_random_location()
 
     if location is None:
-        print(f"✗ Failed to get location for room {room_code}")
+        print(f" Failed to get location for room {room_code}")
         socketio.emit("error", {"message": "Failed to get location"}, room=room_code)
         return
 
@@ -510,14 +558,14 @@ def start_round(room_code):
 # Socket handlers
 @socketio.on("connect")
 def handle_connect():
-    print(f"✓ Client connected: {request.sid}")
+    print(f" Client connected: {request.sid}")
     emit("connected", {"data": "Connected"})
 
 
 @socketio.on("disconnect")
 def handle_disconnect():
     sid = request.sid
-    print(f"✗ Client disconnected: {sid}")
+    print(f" Client disconnected: {sid}")
 
     for room_code, game in list(games.items()):
         if sid in game["players"]:
@@ -527,9 +575,9 @@ def handle_disconnect():
 
             if len(game["players"]) == 0:
                 del games[room_code]
-                print(f"✗ Deleted empty room: {room_code}")
+                print(f" Deleted empty room: {room_code}")
             elif is_host:
-                print(f"✗ Host left room {room_code} - closing room")
+                print(f" Host left room {room_code} - closing room")
                 emit(
                     "room_closed",
                     {"message": "Host left the game. Room has been closed."},
@@ -538,7 +586,7 @@ def handle_disconnect():
                 del games[room_code]
             else:
                 print(
-                    f"✗ Player left room {room_code} - {len(game['players'])} player(s) remaining"
+                    f" Player left room {room_code} - {len(game['players'])} player(s) remaining"
                 )
                 emit(
                     "player_left",
@@ -569,7 +617,7 @@ def handle_create_room(data):
     }
 
     join_room(room_code)
-    print(f"✓ Room created: {room_code} by {player_name}")
+    print(f" Room created: {room_code} by {player_name}")
 
     emit("room_created", {"room_code": room_code, "player_id": player_id})
     emit("player_joined", {"players": games[room_code]["players"]}, room=room_code)
@@ -596,7 +644,7 @@ def handle_join_room(data):
     }
 
     join_room(room_code)
-    print(f"✓ Player joined room {room_code}: {player_name}")
+    print(f" Player joined room {room_code}: {player_name}")
 
     emit("room_joined", {"room_code": room_code, "player_id": player_id})
     emit("player_joined", {"players": games[room_code]["players"]}, room=room_code)
@@ -618,7 +666,7 @@ def handle_start_game(data):
         emit("error", {"message": "Need 2 players to start"})
         return
 
-    print(f"✓ Starting game in room {room_code}")
+    print(f" Starting game in room {room_code}")
     start_round(room_code)
 
 
@@ -640,7 +688,7 @@ def handle_submit_guess(data):
     }
 
     print(
-        f"✓ Guess submitted in room {room_code} by {game['players'][player_id]['name']}"
+        f" Guess submitted in room {room_code} by {game['players'][player_id]['name']}"
     )
 
     if all(p["guess"] is not None for p in game["players"].values()):
@@ -667,7 +715,7 @@ def handle_submit_guess(data):
                 }
             )
 
-        print(f"✓ Round {game['current_round']} completed in room {room_code}")
+        print(f" Round {game['current_round']} completed in room {room_code}")
 
         emit(
             "round_end",
@@ -693,7 +741,7 @@ def handle_ready_for_next_round(data):
     game = games[room_code]
     player_name = game["players"][player_id]["name"]
 
-    print(f"✓ Player {player_name} clicked next round - advancing room {room_code}")
+    print(f" Player {player_name} clicked next round - advancing room {room_code}")
 
     start_round(room_code)
 
@@ -701,11 +749,17 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("NYC Crime GeoGuessr Server")
     print("=" * 60)
-    if df is not None:
-        print(f"✓ Crime data: {len(df)} records loaded")
-    else:
-        print("✗ Crime data: FAILED TO LOAD")
-    print(f"✓ Server starting on http://localhost:8080")
-    print("=" * 60 + "\n")
 
+    if df is None:
+        print("Data not loaded.")
+        initialize_data()
+    
+    if df is not None:
+        print(f" Crime data: {len(df)} records loaded")
+        print(f" Created {len(choropleth_maps)} choropleth maps")
+    else:
+        print(" Crime data didn't load")
+    print(f" Server starting on http://localhost:8080")
+    print("=" * 60 + "\n")
+    
     socketio.run(app, host="0.0.0.0", port=8080, debug=True, allow_unsafe_werkzeug=True)
