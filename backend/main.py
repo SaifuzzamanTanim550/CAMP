@@ -296,7 +296,7 @@ socketio = SocketIO(
 games = {}
 
 # Config
-GOOGLE_MAPS_API_KEY = "AIzaSyDOuKyfb-Y2fJEfLOgfR46SVwkUn9NNoCE"  # Replace with your API key  
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "") 
 MAX_ROUNDS = 3
 
 shooting_keywords = ["SHOT SPOTTER", "SHOTS", "FIREARM"]
