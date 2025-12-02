@@ -27,6 +27,14 @@ steps:
     '--region', 'us-east4',
     '--allow-unauthenticated',
     '--service-account', 'camp-477922@appspot.gserviceaccount.com',
+    '--cpu', '2',
+    '--memory', '4Gi',
+    '--timeout', '300',
+    '--startup-cpu-boost',
+    '--min-instances', '1',
+    '--max-instances', '10',
+    '--concurrency', '10',
+    '--cpu-throttling',
     '--set-env-vars', 'GCS_BUCKET_NAME=crime-dataset-bucket,GOOGLE_MAPS_API_KEY=$$GOOGLE_MAPS_API_KEY'
   ]
   secretEnv: ['GOOGLE_MAPS_API_KEY']

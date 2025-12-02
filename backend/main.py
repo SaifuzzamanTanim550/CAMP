@@ -8,6 +8,7 @@ import random
 import string
 from math import radians, cos, sin, asin, sqrt
 import time
+import threading
 import folium
 from folium.plugins import MarkerCluster
 from folium import Map, Choropleth, GeoJson
@@ -222,7 +223,7 @@ def load_data():
 
 @app.route("/ping")
 def ping():
-    return "✓ Backend is alive"
+    return "Backend is alive"
 
 @app.route("/")
 def default_map():
@@ -235,7 +236,9 @@ def crime_heatmap():
     category = request.args.get("category", "ASSAULT").upper()
 
     if not choropleth_maps:
-        return f"Data not loaded. Use /load"
+        if df is None:
+            return "Data is still loading. Please wait...", 503
+        return f"Data not loaded. Use /load", 503
 
     if category not in choropleth_maps:
         return f"Invalid category: {category}", 400
@@ -275,8 +278,32 @@ def initialize_data():
         import traceback
         traceback.print_exc()
 
-initialize_data()
-    
+_data_loading_started = False
+_data_loading_complete = False
+
+def load_data_background():
+    global _data_loading_complete
+    print("=" * 60)
+    print("Starting background data loading...")
+    print("=" * 60)
+    try:
+        initialize_data()
+        _data_loading_complete = True
+        print("=" * 60)
+        print("Background data loading complete!")
+        print(f"Loaded {len(df) if df is not None else 0} rows")
+        print(f"Created {len(choropleth_maps)} choropleth maps")
+        print("=" * 60)
+    except Exception as e:
+        print(f"ERROR in background data loading: {e}")
+        import traceback
+        traceback.print_exc()
+
+if not _data_loading_started:
+    _data_loading_started = True
+    data_loading_thread = threading.Thread(target=load_data_background, daemon=True)
+    data_loading_thread.start()
+    print("Background data loading thread started")    
 
 #GEOGUESSER CODE START
 
@@ -749,10 +776,14 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("NYC Crime GeoGuessr Server")
     print("=" * 60)
+    import time
+    time.sleep(2) 
 
     if df is None:
-        print("Data not loaded.")
-        initialize_data()
+        data_loading_thread.join(timeout=120)
+        if df is None:
+            print("Background loading timed out. Loading synchronously...")
+            initialize_data()
     
     if df is not None:
         print(f" Crime data: {len(df)} records loaded")
