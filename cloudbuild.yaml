@@ -27,7 +27,7 @@ steps:
     '--region', 'us-east4',
     '--allow-unauthenticated',
     '--service-account', 'camp-477922@appspot.gserviceaccount.com',
-    '--cpu', '2',
+    '--cpu', '4',
     '--memory', '16Gi',
     '--timeout', '300',
     '--cpu-boost',
