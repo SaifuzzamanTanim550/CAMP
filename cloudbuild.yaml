@@ -30,7 +30,7 @@ steps:
     '--cpu', '2',
     '--memory', '4Gi',
     '--timeout', '300',
-    '--startup-cpu-boost',
+    '--cpu-boost',
     '--min-instances', '1',
     '--max-instances', '10',
     '--concurrency', '10',
