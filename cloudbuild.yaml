@@ -28,7 +28,7 @@ steps:
     '--allow-unauthenticated',
     '--service-account', 'camp-477922@appspot.gserviceaccount.com',
     '--cpu', '2',
-    '--memory', '8Gi',
+    '--memory', '16Gi',
     '--timeout', '300',
     '--cpu-boost',
     '--min-instances', '1',
