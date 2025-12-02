@@ -56,7 +56,7 @@ const CrimeGeoGuesser = () => {
     }
 
     console.log('Creating new WebSocket connection...');
-    const socket = new WebSocket('ws://localhost:8080/socket.io/?EIO=4&transport=websocket');
+    const socket = new WebSocket('wss://camp-service-353447914077.us-east4.run.app/socket.io/?EIO=4&transport=websocket');
     wsRef.current = socket;
 
     socket.onopen = () => {

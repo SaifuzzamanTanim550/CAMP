@@ -14,4 +14,4 @@ COPY nyc_nta_2020.geojson /app/nyc_nta_2020.geojson
 COPY . .
 
 ENV PORT=8080
-CMD gunicorn -b 0.0.0.0:8080 --timeout 120 --workers 1 --threads 4 main:app
+CMD gunicorn -b 0.0.0.0:8080 --worker-class gevent --worker-connections 1000 --timeout 120 --workers 1 --threads 4 main:app
