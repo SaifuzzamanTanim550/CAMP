@@ -35,8 +35,7 @@ steps:
     '--max-instances', '5',
     '--concurrency', '5',
     '--cpu-throttling',
-    '--set-env-vars', 'GCS_BUCKET_NAME=crime-dataset-bucket,GOOGLE_MAPS_API_KEY=$$GOOGLE_MAPS_API_KEY',
-    '--update-secrets', 'GOOGLE_MAPS_API_KEY=google-maps-api-key:latest'
+    '--set-env-vars', 'GCS_BUCKET_NAME=crime-dataset-bucket
   ]
 
 serviceAccount: camp-477922@appspot.gserviceaccount.com
